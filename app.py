@@ -6,7 +6,7 @@ import json
 import nltk
 from transformers import pipeline
 import torch
-
+from flask_cors import CORS
 # Download NLTK 'punkt' tokenizer and related data (including 'punkt_tab' for newer versions)
 NLTK_DATA_DIR = "/opt/render/nltk_data"
 os.makedirs(NLTK_DATA_DIR, exist_ok=True)
@@ -25,6 +25,7 @@ device = 0 if torch.cuda.is_available() else -1
 classifier = pipeline("text-classification", model=model_name, tokenizer=model_name, device=device)
 
 app = Flask(__name__)
+CORS(app)
 
 @app.route('/', methods=['GET'])
 def health():
