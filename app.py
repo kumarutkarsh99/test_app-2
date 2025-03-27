@@ -1,97 +1,166 @@
 from flask import Flask, request, jsonify
-import torch
-import pandas as pd
-import nltk
-from nltk.tokenize import sent_tokenize
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
-from flask_cors import CORS
 import os
+import io
+import csv
+import json
+import nltk
+from transformers import pipeline
+import torch
 
-# Set and load NLTK data path
-nltk_data_path = "/opt/render/nltk_data"
-nltk.download("punkt", download_dir=nltk_data_path)
-nltk.data.path.append(nltk_data_path)
-
-# Initialize Flask app
-app = Flask(__name__)
-CORS(app)
-
-# Set device
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-# Load model and tokenizer
-model_path = 'kumarutkarsh99/biasfree'  # Ensure this path is correct
+# Download NLTK 'punkt' tokenizer and related data (including 'punkt_tab' for newer versions)
+NLTK_DATA_DIR = "/opt/render/nltk_data"
+os.makedirs(NLTK_DATA_DIR, exist_ok=True)
 try:
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
-    model = AutoModelForSequenceClassification.from_pretrained(model_path).to(device)
-    model.eval()
-    classifier = pipeline(
-        'text-classification',
-        model=model,
-        tokenizer=tokenizer,
-        device=0 if torch.cuda.is_available() else -1
-    )
+    nltk.download("punkt", quiet=True, download_dir=NLTK_DATA_DIR)
+    try:
+        nltk.download("punkt_tab", quiet=True, download_dir=NLTK_DATA_DIR)
+    except Exception:
+        pass
 except Exception as e:
-    print(f"Error loading model: {e}")
-    classifier = None
+    print(f"NLTK download error: {e}")
 
-# Function to detect biased sentences
-def identify_biased_sentences(text, classifier, threshold=0.3):
-    if classifier is None:
-        return []
-    sentences = sent_tokenize(text)
-    results = []
-    
-    for sentence in sentences:
-        result = classifier(sentence)
-        label = result[0]['label']
-        score = result[0]['score']
-        is_biased = 1 if label == 'LABEL_1' and score > threshold else 0
-        results.append({"sentence": sentence, "bias_score": round(score, 4), "label": "BIAS" if is_biased else "NEUTRAL"})
-    
-    return results
+# Load the Hugging Face model pipeline for text classification
+model_name = "kumarutkarsh99/biasfree"
+device = 0 if torch.cuda.is_available() else -1
+classifier = pipeline("text-classification", model=model_name, tokenizer=model_name, device=device)
+
+app = Flask(__name__)
 
 @app.route('/', methods=['GET'])
 def health():
-    return jsonify({"message": "API is running"}), 200
+    return "OK", 200
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
-    try:
-        if 'text' in request.form:
-            text = request.form['text'].strip()
-            if not text:
-                return jsonify({"error": "Text input is empty"}), 400
-            results = identify_biased_sentences(text, classifier)
-            return jsonify({"results": results})
-        
-        if 'file' in request.files:
-            file = request.files['file']
-            if file.filename == '':
-                return jsonify({"error": "No file selected"}), 400
+    sentences = []
+    # Check if a file is provided in the request
+    if request.files:
+        file = request.files.get('file') or next(iter(request.files.values()), None)
+        if not file:
+            return jsonify({"error": "No file provided"}), 400
+        filename = file.filename or ''
+        content = file.read()
+        # Determine file type (CSV or JSON) by extension or content type
+        if filename.lower().endswith('.csv') or 'csv' in (file.content_type or ''):
+            content_str = content.decode('utf-8', errors='ignore')
+            reader = csv.reader(io.StringIO(content_str))
+            rows = list(reader)
+            # Skip header row if present
+            if rows:
+                first_cell = rows[0][0] if len(rows[0]) > 0 else ''
+                if first_cell.strip().lower() in ('text', 'sentence', 'sentences', 'input'):
+                    rows = rows[1:]
+            for row in rows:
+                if row and len(row) > 0:
+                    sentence = str(row[0]).strip()
+                    if sentence:
+                        sentences.append(sentence)
+        elif filename.lower().endswith('.json') or 'json' in (file.content_type or ''):
+            content_str = content.decode('utf-8', errors='ignore')
             try:
-                if file.filename.endswith('.csv'):
-                    df = pd.read_csv(file, encoding='utf-8')
-                elif file.filename.endswith('.json'):
-                    df = pd.read_json(file, encoding='utf-8')
+                data = json.loads(content_str)
+            except Exception:
+                return jsonify({"error": "Invalid JSON file"}), 400
+            # Extract sentences from JSON structure
+            if isinstance(data, dict):
+                if "sentences" in data and isinstance(data["sentences"], list):
+                    for item in data["sentences"]:
+                        if isinstance(item, str):
+                            if item.strip():
+                                sentences.append(item.strip())
+                        elif isinstance(item, dict):
+                            if "text" in item:
+                                val = str(item["text"]).strip()
+                                if val:
+                                    sentences.append(val)
+                            elif "sentence" in item:
+                                val = str(item["sentence"]).strip()
+                                if val:
+                                    sentences.append(val)
+                elif "text" in data and isinstance(data["text"], list):
+                    for item in data["text"]:
+                        if isinstance(item, str):
+                            if item.strip():
+                                sentences.append(item.strip())
                 else:
-                    return jsonify({"error": "Unsupported file type. Use CSV or JSON"}), 400
-                
-                if df.empty or df.shape[1] == 0:
-                    return jsonify({"error": "File is empty or has no columns"}), 400
-                
-                all_results = []
-                for row in df.iloc[:, 0]:
-                    row_results = identify_biased_sentences(str(row), classifier)
-                    all_results.extend(row_results)
-                
-                return jsonify({"results": all_results})
-            except Exception as e:
-                return jsonify({"error": f"File processing failed: {str(e)}"}), 400
-        
-        return jsonify({"error": "No valid input provided"}), 400
-    except Exception as e:
-        return jsonify({"error": f"Server error: {str(e)}"}), 500
+                    for val in data.values():
+                        if isinstance(val, str):
+                            if val.strip():
+                                sentences.append(val.strip())
+                        elif isinstance(val, list):
+                            for item in val:
+                                if isinstance(item, str):
+                                    if item.strip():
+                                        sentences.append(item.strip())
+            elif isinstance(data, list):
+                for item in data:
+                    if isinstance(item, str):
+                        if item.strip():
+                            sentences.append(item.strip())
+                    elif isinstance(item, dict):
+                        if "text" in item:
+                            val = str(item["text"]).strip()
+                            if val:
+                                sentences.append(val)
+                        elif "sentence" in item:
+                            val = str(item["sentence"]).strip()
+                            if val:
+                                sentences.append(val)
+        else:
+            return jsonify({"error": "Unsupported file type"}), 400
+    else:
+        # Handle raw text input (JSON or form data)
+        text_input = None
+        if request.is_json:
+            data = request.get_json(silent=True)
+            if not data:
+                return jsonify({"error": "No JSON data provided"}), 400
+            text_input = data.get("text")
+        if text_input is None:
+            text_input = request.form.get("text")
+        if text_input is None or text_input == "":
+            return jsonify({"error": "No text provided"}), 400
+        text_input = str(text_input)
+        sentences = nltk.tokenize.sent_tokenize(text_input)
+    if not sentences:
+        return jsonify({"error": "No sentences found in input"}), 400
+
+    results = []
+    for sent in sentences:
+        try:
+            output = classifier(sent)
+        except Exception as e:
+            return jsonify({"error": f"Model inference failed: {e}"}), 500
+        # Pipeline returns a list for each input; take the first result dict
+        result = output[0] if isinstance(output, list) else output
+        label = str(result.get("label", ""))
+        score = result.get("score", None)
+        low_label = label.lower()
+        # Determine bias based on label or score
+        if "unbias" in low_label or "no bias" in low_label or "not bias" in low_label:
+            biased_flag = False
+        elif label.upper().startswith("LABEL_"):
+            # If label is like "LABEL_0", "LABEL_1", etc.
+            try:
+                idx = int(label.split("_")[1])
+                biased_flag = (idx != 0)
+            except:
+                biased_flag = True if "1" in label else False
+        elif "bias" in low_label:
+            # Label explicitly indicates bias (e.g., contains "bias")
+            biased_flag = True
+        elif score is not None and isinstance(score, (float, int)):
+            # Fallback: use score threshold 0.5 if label name gives no clue
+            biased_flag = True if score >= 0.5 else False
+        else:
+            biased_flag = False
+        results.append({
+            "sentence": sent,
+            "biased": biased_flag,
+            "confidence": float(score) if score is not None else None
+        })
+    return jsonify({"results": results}), 200
+
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))  
