@@ -1,0 +1,6 @@
+flask
+transformers
+torch
+nltk
+pandas
+flask-cors

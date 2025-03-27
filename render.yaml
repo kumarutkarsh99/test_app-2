@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: bias-detector-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    envVars:
+      - key: TRANSFORMERS_CACHE
+        value: /tmp/huggingface
+    plan: free
