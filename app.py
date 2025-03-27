@@ -5,6 +5,8 @@ import nltk
 from nltk.tokenize import sent_tokenize
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
 from flask_cors import CORS
+import os
+
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -87,4 +89,6 @@ def analyze():
         return jsonify({"error": f"Server error: {str(e)}"}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.environ.get('PORT', 10000))  # Render provides a PORT env var
+    app.run(host='0.0.0.0', port=port)
+
