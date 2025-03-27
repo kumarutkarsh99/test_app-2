@@ -4,6 +4,7 @@ import io
 import csv
 import json
 import nltk
+import time
 from transformers import pipeline
 import torch
 from flask_cors import CORS
@@ -13,17 +14,8 @@ NLTK_DATA_DIR = "/opt/render/nltk_data"
 os.makedirs(NLTK_DATA_DIR, exist_ok=True)
 try:
     nltk.download("punkt", quiet=True, download_dir=NLTK_DATA_DIR)
-    try:
-        nltk.download("punkt_tab", quiet=True, download_dir=NLTK_DATA_DIR)
-    except Exception:
-        pass
 except Exception as e:
     print(f"NLTK download error: {e}")
-
-# Load model pipeline
-model_name = "kumarutkarsh99/biasfree"
-device = 0 if torch.cuda.is_available() else -1
-classifier = pipeline("text-classification", model=model_name, tokenizer=model_name, device=device)
 
 app = Flask(__name__)
 CORS(app)
@@ -36,7 +28,7 @@ def health():
 def analyze():
     sentences = []
 
-    # File-based input
+    # --- Handle File Upload ---
     if request.files:
         file = request.files.get('file') or next(iter(request.files.values()), None)
         if not file:
@@ -86,6 +78,10 @@ def analyze():
                             for item in val:
                                 if isinstance(item, str) and item.strip():
                                     sentences.append(item.strip())
+                                elif isinstance(item, dict):
+                                    val = item.get("text") or item.get("sentence")
+                                    if val and isinstance(val, str) and val.strip():
+                                        sentences.append(val.strip())
             elif isinstance(data, list):
                 for item in data:
                     if isinstance(item, str) and item.strip():
@@ -97,62 +93,55 @@ def analyze():
         else:
             return jsonify({"error": "Unsupported file type"}), 400
 
+    # --- Handle Raw Text Input ---
     else:
-        # Text input
-        text_input = None
-        if request.is_json:
-            data = request.get_json(silent=True)
-            if not data:
-                return jsonify({"error": "No JSON data provided"}), 400
-            text_input = data.get("text")
-
-        if text_input is None:
-            text_input = request.form.get("text")
-
+        text_input = request.form.get("text")
         if not text_input:
             return jsonify({"error": "No text provided"}), 400
-
-        text_input = str(text_input)
-        sentences = nltk.tokenize.sent_tokenize(text_input)
+        sentences = nltk.tokenize.sent_tokenize(text_input.strip())
 
     if not sentences:
         return jsonify({"error": "No sentences found in input"}), 400
 
-    # Batch inference
+    # --- Limit Sentence Count ---
+    MAX_SENTENCES = 100
+    if len(sentences) > MAX_SENTENCES:
+        return jsonify({"error": f"Too many sentences ({len(sentences)}). Limit is {MAX_SENTENCES}."}), 400
+
+    # --- Load model inside route to save memory ---
     try:
-        outputs = classifier(sentences)
+        model_name = "kumarutkarsh99/biasfree"
+        classifier = pipeline("text-classification", model=model_name, tokenizer=model_name, device=0 if torch.cuda.is_available() else -1)
     except Exception as e:
-        return jsonify({"error": f"Model inference failed: {e}"}), 500
+        return jsonify({"error": f"Model loading failed: {e}"}), 500
 
+    # --- Per-sentence Inference (Slow, Safe) ---
     results = []
-    for sent, result in zip(sentences, outputs):
-        label = str(result.get("label", ""))
-        score = result.get("score", None)
-        low_label = label.lower()
+    for sent in sentences:
+        try:
+            output = classifier(sent)[0]
+            label = output.get("label", "").lower()
+            score = output.get("score", 0.0)
 
-        if "unbias" in low_label or "no bias" in low_label or "not bias" in low_label:
-            biased_flag = False
-        elif label.upper().startswith("LABEL_"):
-            try:
-                idx = int(label.split("_")[1])
-                biased_flag = (idx != 0)
-            except:
-                biased_flag = "1" in label
-        elif "bias" in low_label:
-            biased_flag = True
-        elif score is not None and isinstance(score, (float, int)):
-            biased_flag = score >= 0.5
-        else:
-            biased_flag = False
+            if "unbias" in label or "no bias" in label or "not bias" in label:
+                biased = False
+            elif "bias" in label:
+                biased = True
+            else:
+                biased = score >= 0.5
 
-        results.append({
-            "sentence": sent,
-            "biased": bool(biased_flag),
-            "confidence": float(score) if score is not None else None
-        })
+            results.append({
+                "sentence": sent,
+                "biased": bool(biased),
+                "confidence": float(score)
+            })
+
+            time.sleep(0.25)  # Prevent memory spikes
+
+        except Exception as e:
+            return jsonify({"error": f"Inference failed on: '{sent}' — {e}"}), 500
 
     return jsonify({"results": results}), 200
-
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
