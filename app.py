@@ -16,9 +16,6 @@ nltk.data.path.append(nltk_data_path)
 app = Flask(__name__)
 CORS(app)
 
-# Download NLTK punkt tokenizer (if not already available)
-nltk.download('punkt')
-
 # Set device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -53,6 +50,10 @@ def identify_biased_sentences(text, classifier, threshold=0.3):
         results.append({"sentence": sentence, "bias_score": round(score, 4), "label": "BIAS" if is_biased else "NEUTRAL"})
     
     return results
+
+@app.route('/', methods=['GET'])
+def health():
+    return jsonify({"message": "API is running"}), 200
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
@@ -93,6 +94,6 @@ def analyze():
         return jsonify({"error": f"Server error: {str(e)}"}), 500
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 10000))  # Render provides a PORT env var
+    port = int(os.environ.get('PORT', 10000))  
     app.run(host='0.0.0.0', port=port)
 
