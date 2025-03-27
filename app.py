@@ -7,6 +7,10 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipe
 from flask_cors import CORS
 import os
 
+# Set and load NLTK data path
+nltk_data_path = "/opt/render/nltk_data"
+nltk.download("punkt", download_dir=nltk_data_path)
+nltk.data.path.append(nltk_data_path)
 
 # Initialize Flask app
 app = Flask(__name__)
